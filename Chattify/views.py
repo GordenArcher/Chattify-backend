@@ -5,10 +5,9 @@ from rest_framework.authtoken.models import Token
 from django.contrib.auth.models import User
 from rest_framework import status
 from django.contrib import auth
-from django.views.decorators.csrf import csrf_exempt
+from .serializers import UserSerializer
 
 # Create your views here.
-@csrf_exempt
 @api_view(['POST'])
 def register(request):
     data = request.data
@@ -44,14 +43,7 @@ def register(request):
                     "token":token.key,
                 }, status=status.HTTP_201_CREATED)
 
-                response.set_cookie(
-                    key='isLoggedin',            
-                    value=bool(True),           
-                    httponly=True,               
-                    secure=True,                 
-                    samesite='Lax',  
-                    max_age=60 * 60 * 24 * 7 
-                )
+                
 
             return response    
             
@@ -72,7 +64,6 @@ def register(request):
 
 
 
-@csrf_exempt
 @api_view(['POST'])
 def login(request):
     data = request.data
@@ -93,7 +84,8 @@ def login(request):
             auth.login(request, user)
 
             token, created = Token.objects.get_or_create(user=user)
-            return Response({
+
+            response = Response({
                 "status":"success",
                 "message":"You Loggedin Successfully",
                 "token":token.key,
@@ -102,6 +94,19 @@ def login(request):
                     "email":request.user.email
                 },
             }, status=status.HTTP_200_OK)
+        
+
+            response.set_cookie(
+                key='isLoggedin',            
+                value=bool(True),           
+                httponly=True,
+                secure=True,               
+                samesite='Lax',  
+                path='/', 
+                max_age=60 * 60 * 24 * 7 
+            )
+
+            return response
         
         else:
             return Response({
@@ -119,7 +124,6 @@ def login(request):
 
 
 
-@csrf_exempt
 @api_view(['POST'])
 def logout(request):
     try:
@@ -135,3 +139,32 @@ def logout(request):
             "status":"error",
             "message":f"An Error occured trying to log you out {e}",
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+
+
+
+@api_view(['GET'])
+def get_users(request):
+    user = request.user
+    if not user.is_authenticated:
+        return Response({
+            "status": "error",
+            "message": "User is not authenticated"
+        }, status=status.HTTP_401_UNAUTHORIZED)
+
+    try:
+        all_users = User.objects.exclude(id=user.id)
+        serializer = UserSerializer(all_users, many=True)
+        return Response({
+            "status":"success",
+            "message":"Users retrieved successfully",
+            "data":{
+                "users":serializer.data
+            }
+        }, status=status.HTTP_200_OK)
+    
+    except Exception as e:
+        return Response({
+            "status":"error",
+            "message":f"Error fetching users {e}"
+        }, status=status.HTTP_400_BAD_REQUEST)
