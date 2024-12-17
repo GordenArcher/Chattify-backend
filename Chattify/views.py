@@ -1,11 +1,15 @@
 from django.shortcuts import render
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.authtoken.models import Token
 from django.contrib.auth.models import User
 from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
 from django.contrib import auth
-from .serializers import UserSerializer
+from .serializers import UserSerializer, ProfileSerializer
+from django.db import transaction
+from .models import Profile
+import json
 
 # Create your views here.
 @api_view(['POST'])
@@ -144,6 +148,7 @@ def logout(request):
 
 
 @api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def get_users(request):
     user = request.user
     if not user.is_authenticated:
@@ -167,4 +172,85 @@ def get_users(request):
         return Response({
             "status":"error",
             "message":f"Error fetching users {e}"
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def set_user_profile(request):
+    user = request.user
+    profile_info, _ = Profile.objects.get_or_create(user=user)
+    data = json.loads(request.body)
+    user_bio = request.data.get("bio")
+    profile_picture = data.get("profile_image")
+    cover_picture = data.get("cover_image")
+
+    try:
+
+        with transaction.atomic():
+            if profile_picture:
+                if profile_info.profile_picture:
+                    profile_info.profile_picture.delete()
+
+                profile_info.profile_picture = profile_picture
+                profile_info.save()
+                return Response({
+                    "status":"success",
+                    "message":"Profile Image Updated successfully"
+                },status=status.HTTP_201_CREATED)
+
+            if cover_picture:
+                if profile_info.cover_picture:
+                    profile_info.cover_picture.delete()
+
+                profile_info.cover_picture = cover_picture
+                profile_info.save()
+                return Response({
+                    "status":"success",
+                    "message":"Cover Image Updated successfully"
+                },status=status.HTTP_201_CREATED)
+
+            if user_bio:
+                if profile_info.bio:
+                   del profile_info.bio
+
+                profile_info.bio = user_bio
+                profile_info.save()
+
+                return Response({
+                    "status":"success",
+                    "message":"Bio Updated successfully"
+                },status=status.HTTP_201_CREATED)  
+
+
+    except Exception as e:
+        return Response({
+            "status":"error",
+            "message":f"Error setting profile {e}"
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_profile(request):
+    user = request.user
+    try:
+        get_user_profile = Profile.objects.get(user=user)
+
+        serializer = ProfileSerializer(get_user_profile)
+
+        return Response({
+            "status":"success",
+            "message":"Profile came successfully",
+            "data":serializer.data
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        return Response({
+            "status":"error",
+            "message":f"Error getting profile {e}"
         }, status=status.HTTP_400_BAD_REQUEST)

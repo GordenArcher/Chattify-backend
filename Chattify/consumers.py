@@ -1,5 +1,7 @@
+
 from channels.generic.websocket import AsyncWebsocketConsumer
 from asgiref.sync import sync_to_async
+from channels.db import database_sync_to_async
 import json
 from django.contrib.auth import get_user_model
 from django.utils.timezone import now
@@ -8,25 +10,47 @@ from .models import Chat
 from django.core.files.base import ContentFile
 import base64
 import uuid
+from rest_framework.authtoken.models import Token
+from django.contrib.auth.models import AnonymousUser
 
 User = get_user_model()
+import logging
+
+logger = logging.getLogger(__name__)
 
 class ChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
-        self.message_count = 0
-        self.sender = self.scope['user']
-        self.recipient_username = self.scope['url_route']['kwargs']['username']
-        self.room_group_name = self.get_room_group_name(self.sender.username, self.recipient_username)
+        logger.debug(f"Connecting user: {self.scope['user']}")
+        self.user = await self.get_user()
 
-        if not self.sender.is_authenticated:
+        if not self.user.is_authenticated:
+            logger.warning("User not authenticated")
             await self.close()
             return
+
+        self.message_count = 0
+        self.sender = self.user
+        self.recipient_username = self.scope['url_route']['kwargs']['username']
+        self.room_group_name = self.get_room_group_name(self.sender.username, self.recipient_username)
 
         await self.channel_layer.group_add(
             self.room_group_name,
             self.channel_name
         )
         await self.accept()
+
+    @database_sync_to_async
+    def get_user(self):
+        token_key = self.scope['query_string'].decode().split('=')[-1]
+        logger.debug(f"Token key received: {token_key}")
+
+        try:
+            user = Token.objects.get(key=token_key).user
+            logger.debug(f"Authenticated user: {user}")
+            return user
+        except Token.DoesNotExist:
+            logger.warning("Invalid token")
+            return AnonymousUser()
 
     async def disconnect(self, close_code):
         await self.channel_layer.group_discard(
@@ -113,7 +137,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             file_data = ContentFile(base64.b64decode(imgstr), name=filename)
             return file_data  
         except Exception as e:
-            print(f"Error saving media: {e}")
+            logger.error(f"Error saving media: {e}")
             return None
 
     async def send_error(self, error_message):
@@ -130,7 +154,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         recipient_group_name = f"user_{recipient.username}"
 
-        print(f"Sending notification to {recipient_group_name}: {notification_data}")
+        logger.debug(f"Sending notification to {recipient_group_name}: {notification_data}")
 
         await self.channel_layer.group_send(
             recipient_group_name,
@@ -143,7 +167,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def deliver_notification(self, event):
         notification = event['notification']
         await self.send(text_data=json.dumps(notification))
-
 
     def get_room_group_name(self, sender_username, recipient_username):
         return f"chat_{min(sender_username, recipient_username)}_{max(sender_username, recipient_username)}"
