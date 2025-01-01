@@ -5,14 +5,13 @@ from channels.db import database_sync_to_async
 import json
 from django.contrib.auth import get_user_model
 from django.utils.timezone import now
-
+from django.core.cache import cache
 from .models import Chat
 from django.core.files.base import ContentFile
 import base64
 import uuid
 from rest_framework.authtoken.models import Token
 from django.contrib.auth.models import AnonymousUser
-
 User = get_user_model()
 import logging
 
@@ -28,28 +27,28 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.close()
             return
 
+
         self.message_count = 0
         self.sender = self.user
         self.recipient_username = self.scope['url_route']['kwargs']['username']
         self.room_group_name = self.get_room_group_name(self.sender.username, self.recipient_username)
+        print(f"Connecting user {self.sender.username} to room {self.room_group_name}")
 
         await self.channel_layer.group_add(
             self.room_group_name,
             self.channel_name
         )
+        cache.set(f"user_status_{self.user.username}", "Online", timeout=None)
         await self.accept()
 
     @database_sync_to_async
     def get_user(self):
         token_key = self.scope['query_string'].decode().split('=')[-1]
-        logger.debug(f"Token key received: {token_key}")
 
         try:
             user = Token.objects.get(key=token_key).user
-            logger.debug(f"Authenticated user: {user}")
             return user
         except Token.DoesNotExist:
-            logger.warning("Invalid token")
             return AnonymousUser()
 
     async def disconnect(self, close_code):
@@ -57,6 +56,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             self.room_group_name,
             self.channel_name
         )
+        cache.set(f"user_status_{self.user.username}", "Offline", timeout=None)
 
     async def receive(self, text_data):
         data = json.loads(text_data)
@@ -96,7 +96,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
             }
         )
 
-        await self.send_notification(recipient, message_obj)
 
     async def chat_message(self, event):
         self.message_count += 1
@@ -106,13 +105,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'message_id': event['message_id'],
             'media': event.get('media'),
             'sender': event['sender'],
+            'timestamp':event['timestamp']
         }
         
         await self.send(text_data=json.dumps({
+            'type': 'chat_message',
             'message': event['message'],
             'media': event.get('media'),
             'sender': event['sender'],
             'recipient': event['recipient'],
+            'timestamp':event['timestamp'],
             'loggedInUser': self.sender.username,
             'incomingMessageCount': self.message_count, 
             'notification': notification_data,
@@ -122,7 +124,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
     def save_message_async(self, sender, recipient, message, media=None):
         return Chat.objects.create(
             user=sender,
-            reciepient=recipient,
+            recipient=recipient,
             message=message,
             media=media,
             sent_at=now(),
@@ -143,33 +145,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def send_error(self, error_message):
         await self.send(text_data=json.dumps({'error': error_message}))
 
-    async def send_notification(self, recipient, message_obj):
-        notification_data = {
-            'type': 'new_message_notification',
-            'message': message_obj.message,
-            'media': message_obj.media.url if message_obj.media else None,
-            'sender': self.sender.username,
-            'timestamp': message_obj.sent_at.isoformat(),
-        }
-
-        recipient_group_name = f"user_{recipient.username}"
-
-        logger.debug(f"Sending notification to {recipient_group_name}: {notification_data}")
-
-        await self.channel_layer.group_send(
-            recipient_group_name,
-            {
-                'type': 'deliver_notification',
-                'notification': notification_data
-            }
-        )
-
-    async def deliver_notification(self, event):
-        notification = event['notification']
-        await self.send(text_data=json.dumps(notification))
-
     def get_room_group_name(self, sender_username, recipient_username):
-        return f"chat_{min(sender_username, recipient_username)}_{max(sender_username, recipient_username)}"
+        return f"{min(sender_username, recipient_username)}_{max(sender_username, recipient_username)}"
 
     @sync_to_async
     def get_recipient_async(self):

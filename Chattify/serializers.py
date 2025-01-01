@@ -1,22 +1,30 @@
 from rest_framework import serializers
-from .models import Chat, Profile
+from .models import Chat, Profile, FriendRequest
 from django.contrib.auth.models import User
 
 class ChatSerialzer(serializers.ModelSerializer):
     class Meta:
         model = Chat
-        fields = '__all__'
+        fields = ['user', 'recipient', 'message', 'media', 'sent_at']
 
-
-
-class UserSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = User
-        fields = ['id', 'username', 'email']
 
 
 
 class ProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = Profile
-        fields = "__all__"
+        fields = ['user', 'profile_picture', 'cover_picture', 'bio']
+
+
+
+class UserSerializer(serializers.ModelSerializer):
+    profile = ProfileSerializer(read_only=True)
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'email', 'profile']
+
+
+class FriendRequestSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FriendRequest
+        fields = '__all__'

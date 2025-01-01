@@ -1,4 +1,4 @@
-from django.shortcuts import render
+from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.authtoken.models import Token
@@ -6,10 +6,11 @@ from django.contrib.auth.models import User
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from django.contrib import auth
-from .serializers import UserSerializer, ProfileSerializer
+from .serializers import UserSerializer, ProfileSerializer, ChatSerialzer, FriendRequestSerializer
 from django.db import transaction
-from .models import Profile
+from .models import Profile, Chat, FriendRequest
 import json
+from django.db.models import Q
 
 # Create your views here.
 @api_view(['POST'])
@@ -93,10 +94,6 @@ def login(request):
                 "status":"success",
                 "message":"You Loggedin Successfully",
                 "token":token.key,
-                "payload": {
-                    "username":username,
-                    "email":request.user.email
-                },
             }, status=status.HTTP_200_OK)
         
 
@@ -134,14 +131,14 @@ def logout(request):
         auth.logout(request)
         return Response({
             "status":"success",
-            "message":"You Loggedout Successfully",
+            "message":"You Logged out Successfully",
             
         }, status=status.HTTP_200_OK)
 
     except Exception as e:
         return Response({
             "status":"error",
-            "message":f"An Error occured trying to log you out {e}",
+            "message":f"An Error occurred trying to log you out {e}",
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
 
@@ -158,13 +155,13 @@ def get_users(request):
         }, status=status.HTTP_401_UNAUTHORIZED)
 
     try:
-        all_users = User.objects.exclude(id=user.id)
+        all_users = User.objects.all().exclude(id=user.id)
+        
         serializer = UserSerializer(all_users, many=True)
         return Response({
             "status":"success",
-            "message":"Users retrieved successfully",
             "data":{
-                "users":serializer.data
+                "users":serializer.data,
             }
         }, status=status.HTTP_200_OK)
     
@@ -172,8 +169,7 @@ def get_users(request):
         return Response({
             "status":"error",
             "message":f"Error fetching users {e}"
-        }, status=status.HTTP_400_BAD_REQUEST)
-
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 
@@ -183,7 +179,7 @@ def set_user_profile(request):
     user = request.user
     profile_info, _ = Profile.objects.get_or_create(user=user)
     data = json.loads(request.body)
-    user_bio = request.data.get("bio")
+    user_bio = data.get("bio")
     profile_picture = data.get("profile_image")
     cover_picture = data.get("cover_image")
 
@@ -229,7 +225,7 @@ def set_user_profile(request):
         return Response({
             "status":"error",
             "message":f"Error setting profile {e}"
-        }, status=status.HTTP_400_BAD_REQUEST)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 
@@ -246,11 +242,148 @@ def get_profile(request):
         return Response({
             "status":"success",
             "message":"Profile came successfully",
-            "data":serializer.data
+            "profile":serializer.data,
+            "username":user.username,
+            "email":user.email
         }, status=status.HTTP_200_OK)
 
     except Exception as e:
         return Response({
             "status":"error",
             "message":f"Error getting profile {e}"
-        }, status=status.HTTP_400_BAD_REQUEST)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def chat_message(request, username):
+    user = request.user
+    friend_user = get_object_or_404(User, username=username)
+    if not user.is_authenticated:
+        return Response({
+            "status": "error",
+            "message": "User is not authenticated"
+        }, status=status.HTTP_401_UNAUTHORIZED)
+            
+    try:
+
+        all_messages = Chat.objects.filter(
+            (Q(user=user) & Q(recipient=friend_user)) |
+            (Q(user=friend_user) & Q(recipient=user))
+        )
+
+        serializer = ChatSerialzer(all_messages, many=True)
+        serialize_profile = UserSerializer(friend_user)
+
+        return Response({
+            "data":{
+                "messages":serializer.data,
+                "profile":serialize_profile.data
+            }
+        },status=status.HTTP_200_OK)
+        
+
+    except Exception as e:
+        return Response({
+            "status":"error",
+            "message":f"Error fetching messages {e}"
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def send_friend_request(request, id):
+    to_user = get_object_or_404(User, id=id)
+    
+    try:
+        if FriendRequest.objects.filter(from_user=request.user, to_user=to_user, is_accepted=False).exists():
+            return Response({
+                "status":"error",
+                "message":"Friend request already sent."
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        elif FriendRequest.objects.filter(from_user=request.user, to_user=to_user, is_accepted=True).exists():
+            return Response({
+                "status":"error",
+                "message":f"You're already friends with {to_user.username}"
+            }, status=status.HTTP_400_BAD_REQUEST)   
+
+        elif request.user == to_user:
+            return Response({
+                "status":"error",
+                "message":"You cannot send a friend request to yourself."
+            }, status=status.HTTP_400_BAD_REQUEST)   
+                
+        else:
+            FriendRequest.objects.create(from_user=request.user, to_user=to_user)
+            return Response({
+                "status":"success",
+                "message":f"Friend request sent to {to_user.username}."
+            }, status=status.HTTP_200_OK)    
+        
+    except Exception as e:
+        return Response({
+            "status":"error",
+            "message":"You cannot send a friend request to yourself."
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)              
+
+
+
+    
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def recieved_request(request):
+    try:
+        received_requests = FriendRequest.objects.filter(to_user=request.user)
+        serializer = FriendRequestSerializer(received_requests, many=True)
+        return Response({
+            "status":"success",
+            "data": serializer.data
+        }, status=status.HTTP_200_OK)
+    
+    except Exception as e:
+        return Response({
+            "status":"error",
+            "message":f"error fetching recieved request"
+        } ,status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def friends(request):
+    try:
+        accepted_requests = FriendRequest.objects.filter(is_accepted=True, to_user=request.user)
+        serializer = FriendRequestSerializer(accepted_requests, many=True)
+        return Response({
+            "status":"success",
+            "data": serializer.data
+        }, status=status.HTTP_200_OK)
+    
+    except Exception as e:
+        return Response({
+            "status":"error",
+            "message":f"error fetching recieved request {e}"
+        } ,status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def sent_request(request):
+    try:
+        sent_requests = FriendRequest.objects.filter(from_user=request.user)
+        serializer = FriendRequestSerializer(sent_requests, many=True)
+        return Response({
+            "status":"sucess",
+            "data": serializer.data
+        }, status=status.HTTP_200_OK)
+    
+    except Exception as e:
+        return Response({
+            "status":"error",
+            "message":f"error fetching sent request {e}"
+        } ,status=status.HTTP_500_INTERNAL_SERVER_ERROR)

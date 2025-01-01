@@ -8,4 +8,8 @@ urlpatterns = [
     path("users/", views.get_users),
     path("set_profile/", views.set_user_profile),
     path("get_profile/", views.get_profile),
+    path("chat_messages/<str:username>/", views.chat_message),
+    path("send_request/<str:id>/", views.send_friend_request),
+    path("recieved_request/", views.recieved_request),
+    path("friends/", views.friends),
 ]
