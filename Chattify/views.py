@@ -102,7 +102,7 @@ def login(request):
                 value=bool(True),           
                 httponly=True,
                 secure=True,               
-                samesite='Lax',  
+                samesite='None',  
                 path='/', 
                 max_age=60 * 60 * 24 * 7 
             )
@@ -123,17 +123,33 @@ def login(request):
 
 
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def is_authenticated(request):
+    try:
+        return Response(True)
+
+    except Exception as e:
+        return Response({
+            "status":"error",
+            "message":f"{e}"
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 
 @api_view(['POST'])
 def logout(request):
     try:
         auth.logout(request)
-        return Response({
+        response = Response({
             "status":"success",
             "message":"You Logged out Successfully",
             
         }, status=status.HTTP_200_OK)
+
+        response.delete_cookie("isLoggedin", path="/",)
+    
+        return response
 
     except Exception as e:
         return Response({
@@ -336,7 +352,7 @@ def send_friend_request(request, id):
 @permission_classes([IsAuthenticated])
 def recieved_request(request):
     try:
-        received_requests = FriendRequest.objects.filter(to_user=request.user)
+        received_requests = FriendRequest.objects.filter(to_user=request.user, is_accepted=False)
         serializer = FriendRequestSerializer(received_requests, many=True)
         return Response({
             "status":"success",
@@ -387,3 +403,47 @@ def sent_request(request):
             "status":"error",
             "message":f"error fetching sent request {e}"
         } ,status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def accept_friend_request(request, request_id):
+    friend_request = get_object_or_404(FriendRequest, id=request_id, to_user=request.user)
+    
+    try:
+        friend_request.is_accepted = True
+        friend_request.save()
+        
+        FriendRequest.objects.get_or_create(from_user=request.user, to_user=friend_request.from_user,  is_accepted=True)
+        return Response({
+            "status":"success",
+            "message":f"You are now friends with {friend_request.from_user.username}."
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        return Response({
+            "status":"error",
+            "message":f"error adding {friend_request.from_user.username}"
+        } ,status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                  
+
+
+
+@api_view(['POST'])
+def reject_friend_request(request, request_id):
+    friend_request = get_object_or_404(FriendRequest, id=request_id, to_user=request.user)
+
+    try:
+        friend_request.delete()
+        return Response({
+            "status":"success",
+            "message":f"You removed {friend_request.from_user.username}."
+        }, status=status.HTTP_200_OK)
+    
+    except Exception as e:
+        return Response({
+            "status":"error",
+            "message":f"error removing {friend_request.from_user.username}"
+        } ,status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+   
