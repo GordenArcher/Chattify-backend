@@ -5,7 +5,7 @@ from django.contrib.auth.models import User
 class ChatSerialzer(serializers.ModelSerializer):
     class Meta:
         model = Chat
-        fields = ['user', 'recipient', 'message', 'media', 'sent_at']
+        fields = ['id', 'user', 'recipient', 'message', 'media', 'sent_at']
 
 
 

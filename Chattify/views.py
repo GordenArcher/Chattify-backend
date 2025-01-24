@@ -47,7 +47,6 @@ def register(request):
                     "message":"You Registered Successfully",
                     "token":token.key,
                 }, status=status.HTTP_201_CREATED)
-
                 
 
             return response    
@@ -196,8 +195,9 @@ def set_user_profile(request):
     profile_info, _ = Profile.objects.get_or_create(user=user)
     data = json.loads(request.body)
     user_bio = data.get("bio")
-    profile_picture = data.get("profile_image")
-    cover_picture = data.get("cover_image")
+    profile_picture = request.FILES.get("profile_image")
+    cover_picture = request.FILES.get("cover_image")
+    email = request.data.get("email")
 
     try:
 
@@ -235,6 +235,22 @@ def set_user_profile(request):
                     "status":"success",
                     "message":"Bio Updated successfully"
                 },status=status.HTTP_201_CREATED)  
+            
+            if email:
+                if User.objects.filter(email=email).exists():
+                    return Response({
+                        "status":"error",
+                        "message":"Email already exists"
+                    }, status=status.HTTP_400_BAD_REQUEST)
+                
+                else:
+                    update_email = User.objects.create_user(email=email)
+                    # update_email.save()
+                    return Response({
+                        "status":"success",
+                        "message":"Email updated successfully"
+                    }, status=status.HTTP_100_CONTINUE)
+                
 
 
     except Exception as e:

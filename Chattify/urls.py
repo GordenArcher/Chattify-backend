@@ -14,5 +14,5 @@ urlpatterns = [
     path("friends/", views.friends),
     path('accept-friend-request/<int:request_id>/', views.accept_friend_request,),
     path('reject-friend-request/<int:request_id>/', views.reject_friend_request),
-    path("authenticcate/", views.is_authenticated),
+    path("isAuthenticated/", views.is_authenticated),
 ]
