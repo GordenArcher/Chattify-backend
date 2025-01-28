@@ -2,11 +2,18 @@ from rest_framework import serializers
 from .models import Chat, Profile, FriendRequest
 from django.contrib.auth.models import User
 
+
+class UsSerializer(serializers.ModelSerializer):
+        class Meta:
+            model = User
+            fields = ['id', 'username']
+
 class ChatSerialzer(serializers.ModelSerializer):
+    user = UsSerializer()
+    recipient = UsSerializer()
     class Meta:
         model = Chat
         fields = ['id', 'user', 'recipient', 'message', 'media', 'sent_at']
-
 
 
 

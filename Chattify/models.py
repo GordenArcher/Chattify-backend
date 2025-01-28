@@ -8,6 +8,15 @@ class Chat(models.Model):
     message = models.TextField(blank=True, null=True)
     media = models.FileField(upload_to='message_images/', blank=True)
     sent_at = models.DateTimeField(auto_now_add=True)
+    is_read = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=~models.Q(user=models.F('recipient')),
+                name='prevent_self_message'
+            )
+        ]
 
 
 
@@ -16,7 +25,8 @@ class Profile(models.Model):
     profile_picture = models.ImageField(upload_to="profile_image", null=True, blank=True)
     cover_picture = models.ImageField(upload_to="cover_image", null=True, blank=True)
     bio = models.TextField(max_length=1000, null=True, blank=True)
-
+    location = models.CharField(max_length=255, null=True, blank=True)
+    social_links = models.JSONField(null=True, blank=True)
 
 
 class FriendRequest(models.Model):

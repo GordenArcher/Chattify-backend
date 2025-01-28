@@ -104,7 +104,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     'sender': self.sender.username,
                     'recipient': recipient.username,
                     'message_id': message_obj.id,
-                    'timestamp': message_obj.sent_at.isoformat(),
+                    'sent_at': message_obj.sent_at.isoformat(),
                 }
             )
         except Exception as e:
@@ -131,7 +131,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'message_id': event['message_id'],
             'media': event.get('media'),
             'sender': event['sender'],
-            'timestamp': event['timestamp'],
+            'sent_at': event['sent_at'],
         }
 
         await self.send(text_data=json.dumps({
@@ -141,7 +141,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'media': event.get('media'),
             'sender': event['sender'],
             'recipient': event['recipient'],
-            'timestamp': event['timestamp'],
+            'sent_at': event['sent_at'],
             'loggedInUser': self.sender.username,
             'incomingMessageCount': self.message_count,
             'notification': notification_data,
