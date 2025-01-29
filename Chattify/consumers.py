@@ -101,7 +101,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     'type': 'chat_message',
                     'message': message,
                     'media': message_obj.media.url if message_obj.media else None,
-                    'sender': self.sender.username,
+                    'user': self.sender.username,
                     'recipient': recipient.username,
                     'message_id': message_obj.id,
                     'sent_at': message_obj.sent_at.isoformat(),
@@ -126,31 +126,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
         """Handle and broadcast chat messages."""
         self.message_count += 1
 
-        notification_data = {
-            'message': event['message'],
-            'message_id': event['message_id'],
-            'media': event.get('media'),
-            'sender': event['sender'],
-            'sent_at': event['sent_at'],
-        }
-
         await self.send(text_data=json.dumps({
             'type': 'chat_message',
             'message': event['message'],
             'message_id': event['message_id'],
             'media': event.get('media'),
-            'sender': event['sender'],
+            'user': event['user'],
             'recipient': event['recipient'],
             'sent_at': event['sent_at'],
             'loggedInUser': self.sender.username,
             'incomingMessageCount': self.message_count,
-            'notification': notification_data,
         }))
 
     @sync_to_async
-    def save_message_async(self, sender, recipient, message, media=None):
+    def save_message_async(self, user, recipient, message, media=None):
         return Chat.objects.create(
-            user=sender,
+            user=user,
             recipient=recipient,
             message=message,
             media=media,
