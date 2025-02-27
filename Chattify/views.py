@@ -1,7 +1,6 @@
 from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
-from rest_framework.authtoken.models import Token
 from django.contrib.auth.models import User
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -9,10 +8,137 @@ from django.contrib import auth
 from .serializers import UserSerializer, ProfileSerializer, ChatSerialzer, FriendRequestSerializer
 from django.db import transaction
 from .models import Profile, Chat, FriendRequest
+from django.contrib.gis.geoip2 import GeoIP2
 import json
 from django.db.models import Q
+from django.contrib.auth import authenticate
+from rest_framework_simplejwt.views import (TokenRefreshView)
+from rest_framework_simplejwt.tokens import RefreshToken
+
 
 # Create your views here.
+@api_view(['POST'])
+def login(request):
+    username = request.data.get("username")
+    password = request.data.get("password")
+
+    try:
+        user = authenticate(username=username, password=password)
+    
+        if user:
+            refresh = RefreshToken.for_user(user)
+            access_token = str(refresh.access_token)
+
+            response = Response({
+                "status":"sucess",
+                "message": "Login successful"
+            }, status=status.HTTP_200_OK)
+
+            response.set_cookie(
+                key="access_token",
+                value=access_token,
+                httponly=True,
+                secure=True,
+                samesite="None",
+                max_age=60 * 10,
+                expires=3600,
+            )
+
+            response.set_cookie(
+                key="refresh_token",
+                value=str(refresh),
+                httponly=True,
+                secure=True,
+                samesite="None",
+                max_age=60 * 60 * 24 * 7, 
+                expires=60 * 60 * 24 * 7,
+            )
+
+            response.set_cookie(
+                key="isLoggedIn",
+                value=True,
+                httponly=True,
+                secure=True,
+                samesite="None",
+                max_age=60 * 60 * 24 * 7, 
+                expires=3600,
+            )
+
+            return response
+        else:
+            return Response({
+                "status":"error",
+                "message": "Invalid credentials"
+                }, status=status.HTTP_401_UNAUTHORIZED)
+        
+    except Exception as e:
+        return Response({}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)    
+
+
+
+class customTokenRefreshView(TokenRefreshView):
+    def post(self, request, *args, **kwargs):
+        try:
+            refresh_token = request.COOKIES.get("refresh_token")
+            request.data['refresh'] = refresh_token
+
+            response = super().post(request, *args, **kwargs)
+
+            tokens = response.data
+            access_token = tokens['access']
+
+            res = Response()
+            res.data = {"refreshed":True}
+
+            res.set_cookie(
+                key="access_token",
+                value=access_token,
+                secure=True,
+                httponly=True,
+                samesite='None',
+                path='/',
+                max_age=60 * 60 * 24 * 7,
+                expires=60 * 60 * 24 * 7
+            )
+
+            res.set_cookie(
+                key='isLoggedin',
+                value=True,           
+                secure=True,               
+                samesite='Lax',  
+                path='/',
+                max_age=60 * 60 * 24 * 7,
+                expires=60 * 60 * 24 * 7
+            )
+
+            return res
+
+        except:
+            return Response({"refreshed":False}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)    
+
+
+
+def get_client_ip(request):
+    """Extract the real IP address even behind a proxy."""
+    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+    if x_forwarded_for:
+        return x_forwarded_for.split(',')[0] 
+    return request.META.get('REMOTE_ADDR')
+
+
+
+def get_location(ip):
+    """Get city and country from IP address using GeoIP2."""
+    try:
+        geo = GeoIP2()
+        location = geo.city(ip)
+        city = location.get("city", "Unknown")
+        country = location.get("country_name", "Unknown")
+        return city, country
+    except Exception:
+        return "Unknown", "Unknown"
+
+
 @api_view(['POST'])
 def register(request):
     data = request.data
@@ -40,12 +166,14 @@ def register(request):
                 user = User.objects.create_user(username=username, email=email, password=password)
                 user.save()
 
-                token, _ = Token.objects.get_or_create(user=user)
+                client_ip = get_client_ip(request)
+                city, country = get_location(client_ip)
+
+                Profile.objects.create(user=user, ip_address=client_ip, city=city, country=country)
                 
                 response =  Response({
                     "status":"success",
                     "message":"You Registered Successfully",
-                    "token":token.key,
                 }, status=status.HTTP_201_CREATED)
                 
 
@@ -66,96 +194,32 @@ def register(request):
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)    
 
 
-
-
-@api_view(['POST'])
-def login(request):
-    data = request.data
-    username = data.get("username")
-    password = data.get("password")
-
-    if not username or not password:
-        return Response({
-            "status":"error",
-            "message":"username and Password are required",
-        }, status=status.HTTP_400_BAD_REQUEST)
-
-    user = auth.authenticate(username=username, password=password)
-
-    try:
-
-        if user:
-            auth.login(request, user)
-
-            token, created = Token.objects.get_or_create(user=user)
-
-            response = Response({
-                "status":"success",
-                "message":"You Loggedin Successfully",
-                "token":token.key,
-            }, status=status.HTTP_200_OK)
-        
-
-            response.set_cookie(
-                key='isLoggedin',            
-                value=bool(True),           
-                httponly=True,
-                secure=True,               
-                samesite='None',  
-                path='/', 
-                max_age=60 * 60 * 24 * 7 
-            )
-
-            return response
-        
-        else:
-            return Response({
-                "status":"error",
-                "message":"invalid Credentials",
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-    except Exception as e:
-        return Response({
-            "status":"error",
-            "message":f"An Error occured {e}",
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-
-@api_view(['GET'])
+@api_view(["GET"])
 @permission_classes([IsAuthenticated])
-def is_authenticated(request):
-    try:
-        return Response(True)
-
-    except Exception as e:
-        return Response({
-            "status":"error",
-            "message":f"{e}"
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+def protected_view(request):
+    return Response({"message": "You are authenticated!"}, status=status.HTTP_200_OK)
 
 
-
-@api_view(['POST'])
 def logout(request):
     try:
-        auth.logout(request)
+        refresh_token = request.COOKIES.get("refresh_token")
+        if refresh_token:
+            token = RefreshToken(refresh_token)
+            token.blacklist() 
+
         response = Response({
-            "status":"success",
-            "message":"You Logged out Successfully",
-            
+            "status": "success",
+            "message": "You Logged out Successfully",
         }, status=status.HTTP_200_OK)
 
-        response.delete_cookie("isLoggedin", path="/",)
-    
-        return response
+        response.delete_cookie("isLoggedin")
+        response.delete_cookie("access_token")
+        response.delete_cookie("refresh_token")
 
+        return response
     except Exception as e:
-        return Response({
-            "status":"error",
-            "message":f"An Error occurred trying to log you out {e}",
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
+        return Response({"status": "error", "message": f"Error logging out: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 
 
@@ -185,7 +249,6 @@ def get_users(request):
             "status":"error",
             "message":f"Error fetching users {e}"
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 
 
 @api_view(['POST'])
@@ -274,10 +337,9 @@ def get_profile(request):
 
         return Response({
             "status":"success",
-            "message":"Profile came successfully",
-            "profile":serializer.data,
             "username":user.username,
-            "email":user.email
+            "email":user.email,
+            "profile":serializer.data,
         }, status=status.HTTP_200_OK)
 
     except Exception as e:
@@ -311,7 +373,7 @@ def chat_message(request, username):
         return Response({
             "data":{
                 "messages":serializer.data,
-                "profile":serialize_profile.data
+                "friend":serialize_profile.data
             }
         },status=status.HTTP_200_OK)
         
@@ -341,7 +403,7 @@ def send_friend_request(request, id):
             return Response({
                 "status":"error",
                 "message":f"You're already friends with {to_user.username}"
-            }, status=status.HTTP_400_BAD_REQUEST)   
+            }, status=status.HTTP_400_BAD_REQUEST) 
 
         elif request.user == to_user:
             return Response({

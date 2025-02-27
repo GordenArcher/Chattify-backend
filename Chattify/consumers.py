@@ -5,9 +5,10 @@ import json
 from django.contrib.auth import get_user_model
 from django.utils.timezone import now
 from django.core.cache import cache
-from .models import Chat
+from .models import Chat, FriendRequest
 from django.core.files.base import ContentFile
 import base64
+from django.db.models import Q
 import uuid
 from rest_framework.authtoken.models import Token
 from django.contrib.auth.models import AnonymousUser
@@ -20,12 +21,7 @@ User = get_user_model()
 class ChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         logger.debug(f"Connecting user: {self.scope['user']}")
-        print(f"Connecting user: {self.scope['user']}")
-        
-        token_key = self.scope['query_string'].decode().split('=')[-1]
-        logger.debug(f"Received token: {token_key}")
-
-        self.user = await self.get_user(token_key)
+        self.user = await self.get_user()
 
         if not self.user.is_authenticated:
             logger.warning("User not authenticated")
@@ -34,57 +30,83 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         self.message_count = 0
         self.sender = self.user
-        self.room_group_name = "global_chat"  # Global room for all users
+        self.recipient_username = 'globalroom'
+        self.room_group_name = self.get_room_group_name(self.sender.username, self.recipient_username)
 
-        logger.info(f"User {self.sender.username} connecting to room {self.room_group_name}")
+        logger.info(f"User {self.sender.username} connecting to room {self.get_room_group_name}")
 
         await self.channel_layer.group_add(
             self.room_group_name,
             self.channel_name
         )
-
+        
+        # Set user status to Online in cache
         cache.set(f"user_status_{self.user.username}", "Online", timeout=None)
 
+        # Send online status for this user to the group
         await self.channel_layer.group_send(
             self.room_group_name,
             {
                 'type': 'user_status',
-                'username': self.sender.username,
-                'status': 'Online'
+                'username': self.user.username,
+                'status': 'Online',
             }
         )
+
+        # Fetch and send the online status for accepted friends
+        friends_status = await self.get_friends_online_status(self.user)
+        await self.send_friends_status(friends_status)
 
         await self.accept()
 
     @database_sync_to_async
-    def get_user(self, token_key):
-        if not token_key:
-            logger.warning("No token found in the query string")
+    def get_user(self):
+        token_key = self.scope['query_string'].decode().split('=')[-1]
+        try:
+            user = Token.objects.get(key=token_key).user
+            return user
+        except Token.DoesNotExist:
             return AnonymousUser()
 
-        try:
-            token = Token.objects.get(key=token_key)
-            logger.debug(f"Token found: {token.key}, associated with user: {token.user.username}")
-            return token.user
-        except Token.DoesNotExist:
-            logger.warning(f"Token not found for key: {token_key}")
-            return AnonymousUser()
+    @sync_to_async
+    def get_friends_online_status(self, user):
+        """Fetch the online status of accepted friends."""
+        friends = FriendRequest.objects.filter(
+                Q(is_accepted=True) & (Q(from_user=user) | Q(to_user=user))
+            )
+
+        friends_statuses = {}
+
+        for friend_request in friends:
+            friend = friend_request.to_user if friend_request.from_user == user else friend_request.from_user
+            status = cache.get(f"user_status_{friend.username}", "Offline")
+            friends_statuses[friend.username] = status
+
+        return friends_statuses
+
+    async def send_friends_status(self, friends_statuses):
+        """Send the online status of all friends to the frontend."""
+        await self.send(text_data=json.dumps({
+            'type': 'friends_status',
+            'friends_statuses': friends_statuses
+        }))
 
     async def disconnect(self, close_code):
         await self.channel_layer.group_discard(
             self.room_group_name,
             self.channel_name
         )
-
-        # Set user's status as "Offline"
+        
+        # Set user status to Offline in cache
         cache.set(f"user_status_{self.user.username}", "Offline", timeout=None)
 
+        # Send offline status for this user to the group
         await self.channel_layer.group_send(
             self.room_group_name,
             {
                 'type': 'user_status',
-                'username': self.sender.username,
-                'status': 'Offline'
+                'username': self.user.username,
+                'status': 'Offline',
             }
         )
 
@@ -94,8 +116,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
             message = (data.get('message') or '').strip()
             media = data.get('media')
             typing_status = data.get('typing', False)
-
-            logger.debug(f"Received data: {data}")
 
             if 'typing' in data:
                 await self.channel_layer.group_send(
@@ -119,8 +139,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     await self.send_error('Invalid media file')
                     return
 
-            recipient_username = data.get('recipient')
-            recipient = await self.get_recipient_async(recipient_username)
+            recipient = await self.get_recipient_async()
             if not recipient:
                 await self.send_error('Recipient does not exist')
                 return
@@ -141,37 +160,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     'sent_at': message_obj.sent_at.isoformat(),
                 }
             )
-
-            # Check if the received message indicates the user is still online (True)
-            if data.get('status') == 'True':
-                # Update cache to reflect user is still online
-                cache.set(f"user_status_{self.user.username}", "Online", timeout=None)
-                await self.channel_layer.group_send(
-                    self.room_group_name,
-                    {
-                        'type': 'user_status',
-                        'username': self.sender.username,
-                        'status': 'Online'
-                    }
-                )
-            else:
-                # Update cache to reflect user is offline
-                cache.set(f"user_status_{self.user.username}", "Offline", timeout=None)
-                await self.channel_layer.group_send(
-                    self.room_group_name,
-                    {
-                        'type': 'user_status',
-                        'username': self.sender.username,
-                        'status': 'Offline'
-                    }
-                )
-
         except Exception as e:
             logger.error(f"Error in receive: {e}")
             await self.send_error("An unexpected error occurred.")
 
     async def show_typing(self, event):
-        """Handle and broadcast typing status to the global room."""
+        """Handle and broadcast typing status."""
         username = event['loggedInUser']
         typing = event['typing']
 
@@ -182,7 +176,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         }))
 
     async def chat_message(self, event):
-        """Handle and broadcast chat messages to the global room."""
+        """Handle and broadcast chat messages."""
         self.message_count += 1
 
         await self.send(text_data=json.dumps({
@@ -195,14 +189,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'sent_at': event['sent_at'],
             'loggedInUser': self.sender.username,
             'incomingMessageCount': self.message_count,
-        }))
-
-    async def user_status(self, event):
-        """Handle and broadcast user online/offline status updates."""
-        await self.send(text_data=json.dumps({
-            'type': 'user_status',
-            'username': event['username'],
-            'status': event['status']
         }))
 
     @sync_to_async
@@ -230,9 +216,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def send_error(self, error_message):
         await self.send(text_data=json.dumps({'error': error_message}))
 
+    async def get_room_group_name(self, sender_username, recipient_username):
+        return f"{min(sender_username, recipient_username)}_{max(sender_username, recipient_username)}"
+
     @sync_to_async
-    def get_recipient_async(self, recipient_username):
+    def get_recipient_async(self):
         try:
-            return User.objects.get(username=recipient_username)
+            return User.objects.get(username=self.recipient_username)
         except User.DoesNotExist:
             return None

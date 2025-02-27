@@ -52,13 +52,24 @@ INSTALLED_APPS = [
     'Chattify',
     "corsheaders",
     'rest_framework',
-     'rest_framework.authtoken'
+    'rest_framework_simplejwt',
 ]
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.TokenAuthentication',  
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'Chattify.authentication.CookieOrHeaderAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
     ],
+}
+
+from datetime import timedelta
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=10),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
 }
 
 MIDDLEWARE = [
@@ -74,11 +85,16 @@ MIDDLEWARE = [
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
-    "http://127.0.0.1:8000",
-    "http://localhost:8000",
 ]
 
-CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_CREDENTIALS = True 
+
+CORS_ALLOW_HEADERS = (
+    'authorization',
+    'content-type',
+    'accept',
+    'x-requested-with',
+)
 
 CORS_ALLOW_METHODS = (
     "DELETE",
@@ -96,12 +112,13 @@ CACHES = {
     }
 }
 
-
-SESSION_COOKIE_DOMAIN = None
-CSRF_COOKIE_SAMESITE = None
-SESSION_COOKIE_SAMESITE = None
-CSRF_COOKIE_SECURE = False  
-SESSION_COOKIE_SECURE = False  
+SESSION_COOKIE_AGE = 60 * 60 * 24 * 7 
+SESSION_COOKIE_SECURE = False 
+CSRF_COOKIE_SECURE = False 
+SESSION_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SAMESITE = 'Lax'
+SESSION_COOKIE_HTTPONLY = True
+CSRF_COOKIE_HTTPONLY = True
 
 
 ROOT_URLCONF = 'ChattifyBackend.urls'

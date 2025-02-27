@@ -14,7 +14,7 @@ class ChatSerialzer(serializers.ModelSerializer):
 class ProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = Profile
-        fields = ['user', 'profile_picture', 'cover_picture', 'bio']
+        fields = '__all__'
 
 
 

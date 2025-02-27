@@ -12,8 +12,8 @@ class ChatAdmin(admin.ModelAdmin):
 
 
 class ProfileAdmin(admin.ModelAdmin):
-    list_display = ['user', 'profile_picture', 'cover_picture', 'bio', 'location']
-    search_fields = ['user','profile_picture', 'cover_picture', 'bio', 'location']
+    list_display = ['user', 'profile_picture', 'cover_picture', 'bio', 'city', 'country', 'ip_address']
+    search_fields = ['user','profile_picture', 'cover_picture', 'bio', 'city',  'country', 'ip_address']
 
 
 
