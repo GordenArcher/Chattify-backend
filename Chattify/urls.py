@@ -5,6 +5,8 @@ from .views import customTokenRefreshView
 urlpatterns = [
     path("auth/register/", views.register),
     path("auth/login/", views.login),
+    path('auth/google-login/', views.google_login),
+    path('auth/google-register/', views.google_register),
     path("refresh/", customTokenRefreshView.as_view(), name="custom_refresh"),
     path("auth/logout/", views.logout),
     path("isAuthenticated/", views.protected_view),

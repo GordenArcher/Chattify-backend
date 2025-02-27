@@ -14,6 +14,11 @@ from django.db.models import Q
 from django.contrib.auth import authenticate
 from rest_framework_simplejwt.views import (TokenRefreshView)
 from rest_framework_simplejwt.tokens import RefreshToken
+from django.conf import settings
+import jwt
+from datetime import datetime, timedelta, timezone
+import requests
+import re
 
 
 # Create your views here.
@@ -31,6 +36,7 @@ def login(request):
 
             response = Response({
                 "status":"sucess",
+                "auth":True,
                 "message": "Login successful"
             }, status=status.HTTP_200_OK)
 
@@ -117,6 +123,166 @@ class customTokenRefreshView(TokenRefreshView):
             return Response({"refreshed":False}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)    
 
 
+@api_view(['POST'])
+def google_login(request):
+
+    try:
+
+        token = request.data.get('token')
+        if not token:
+            return Response({'error': 'Token is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        google_url = f"https://oauth2.googleapis.com/tokeninfo?id_token={token}"
+        response = requests.get(google_url)
+        
+        if response.status_code != 200:
+            return Response({
+                "status":"error",
+                'message': 'Invalid token'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        user_data = response.json()
+        email = user_data.get('email')
+        given_name = user_data.get('given_name')
+
+        if not email:
+            return Response({
+                "status": "error",
+                'message': 'Email not found'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        username = email.split('@')[0]
+        username = re.sub(r'[^a-zA-Z0-9]', '', username)
+
+        try:
+            user = User.objects.get(username=given_name)
+        except User.DoesNotExist:
+            return Response({
+                "status":"error",
+                'message': 'User not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        access_payload = {
+            'id': user.id,
+            'exp': datetime.now(timezone.utc) + timedelta(minutes=10),
+        }
+        access_token = jwt.encode(access_payload, settings.SECRET_KEY, algorithm='HS256')
+
+        refresh_payload = {
+            'id': user.id,
+            'exp': datetime.now(timezone.utc) + timedelta(days=7),
+        }
+        refresh_token = jwt.encode(refresh_payload, settings.SECRET_KEY, algorithm='HS256')
+
+        response = Response({
+            "status": "success",
+            "auth":True,
+            "message": "User logged in successfully",
+        }, status=status.HTTP_200_OK)
+
+        response.set_cookie(
+            key="access_token",
+            value=access_token,
+            httponly=True,
+            secure=True,
+            samesite="None",
+            max_age=60 * 10,
+            expires=60 * 10,
+        )
+
+        response.set_cookie(
+            key="refresh_token",
+            value=refresh_token,
+            httponly=True,
+            secure=True,
+            samesite="None",
+            max_age=60 * 60 * 24 * 7,
+            expires=60 * 60 * 24 * 7,
+        )
+
+        response.set_cookie(
+            key="isLoggedIn",
+            value="true", 
+            httponly=True,
+            secure=True,
+            samesite="None",
+            max_age=60 * 60 * 24 * 7,
+            expires=60 * 60 * 24 * 7,
+        )
+
+        return response
+    
+    except Exception as e:
+        return Response({
+            "status":"error",
+            "message":f"Error occured {e}"
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+
+
+@api_view(['POST'])
+def google_register(request):
+    token = request.data.get('token')
+    if not token:
+        return Response({
+            "status":"error",
+            'message': 'Token is required'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    google_url = f"https://oauth2.googleapis.com/tokeninfo?id_token={token}"
+    response = requests.get(google_url)
+
+    if response.status_code != 200:
+        return Response({
+            "status":"error",
+            'message':'Invalid token'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    user_data = response.json()
+    email = user_data.get('email')
+    picture = user_data.get('picture')
+    given_name = user_data.get('given_name')
+    family_name = user_data.get('family_name')
+
+    if not email:
+        return Response({
+            "status":"error",
+            'message': 'Email not found in Google data'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    user = User.objects.filter(email=email).first()
+
+    if user:
+        return Response({
+            "status":"error",
+            'message': 'Email already exists'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    if User.objects.filter(username=given_name).exists():
+        return Response({
+            "status":"error",
+            "message":"username already exists"
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    user = User.objects.create_user(
+        username=given_name,
+        email=email,
+        first_name=given_name,
+        last_name=family_name,
+        password=None
+    )
+
+    client_ip = get_client_ip(request)
+    city, country = get_location(client_ip)
+    Profile.objects.create(user=user, profile_picture=picture, ip_address=client_ip, city=city, country=country)
+    user.save()
+
+    return Response({
+        "status":"sucess",
+        'message': 'Account created successfully'
+    }, status=status.HTTP_201_CREATED)
+
 
 def get_client_ip(request):
     """Extract the real IP address even behind a proxy."""
@@ -133,7 +299,7 @@ def get_location(ip):
         geo = GeoIP2()
         location = geo.city(ip)
         city = location.get("city", "Unknown")
-        country = location.get("country_name", "Unknown")
+        country = geo.country_name(ip)
         return city, country
     except Exception:
         return "Unknown", "Unknown"
@@ -197,7 +363,11 @@ def register(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def protected_view(request):
-    return Response({"message": "You are authenticated!"}, status=status.HTTP_200_OK)
+    return Response({
+        "status":"sucess",
+        "auth":True,
+        "message": "You are authenticated!"
+        }, status=status.HTTP_200_OK)
 
 
 def logout(request):
