@@ -7,7 +7,7 @@ class ChatSerialzer(serializers.ModelSerializer):
     recipient = serializers.CharField(source="recipient.username")
     class Meta:
         model = Chat
-        fields = ['id', 'user', 'recipient', 'message', 'media', 'sent_at']
+        fields = '__all__'
 
 
 

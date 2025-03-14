@@ -30,15 +30,6 @@ ALLOWED_HOSTS = []
 
 ASGI_APPLICATION = 'ChattifyBackend.asgi.application'
 
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {
-            "hosts": [("127.0.0.1", 6379)],
-        },
-    },
-}
-
 # Application definition
 
 INSTALLED_APPS = [
@@ -55,6 +46,15 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt',
 ]
+
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [("127.0.0.1", 6379)],
+        },
+    },
+}
 
 AUTHENTICATION_BACKENDS = (
     'social_core.backends.google.GoogleOAuth2',
@@ -79,6 +79,7 @@ SIMPLE_JWT = {
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
+    "AUTH_COOKIE_SAMESITE": 'Lax'
 }
 
 MIDDLEWARE = [
@@ -92,7 +93,12 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
+CORS_ALLOW_ALL_ORIGINS = True
+
 CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+]
+CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
 ]
 

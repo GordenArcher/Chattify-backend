@@ -36,6 +36,7 @@ def login(request):
 
             response = Response({
                 "status":"sucess",
+                "token":access_token,
                 "auth":True,
                 "message": "Login successful"
             }, status=status.HTTP_200_OK)
@@ -47,7 +48,7 @@ def login(request):
                 secure=True,
                 samesite="None",
                 max_age=60 * 10,
-                expires=3600,
+                expires=60 * 10,
             )
 
             response.set_cookie(
@@ -66,8 +67,8 @@ def login(request):
                 httponly=True,
                 secure=True,
                 samesite="None",
-                max_age=60 * 60 * 24 * 7, 
-                expires=3600,
+                max_age=60 * 10,
+                expires=60 * 10,
             )
 
             return response
@@ -94,7 +95,7 @@ class customTokenRefreshView(TokenRefreshView):
             access_token = tokens['access']
 
             res = Response()
-            res.data = {"refreshed":True}
+            res.data = {"refreshed":True, "token":access_token}
 
             res.set_cookie(
                 key="access_token",
@@ -103,18 +104,18 @@ class customTokenRefreshView(TokenRefreshView):
                 httponly=True,
                 samesite='None',
                 path='/',
-                max_age=60 * 60 * 24 * 7,
-                expires=60 * 60 * 24 * 7
+                max_age=60 * 10,
+                expires=60 * 10,
             )
 
-            res.set_cookie(
-                key='isLoggedin',
-                value=True,           
-                secure=True,               
-                samesite='Lax',  
-                path='/',
-                max_age=60 * 60 * 24 * 7,
-                expires=60 * 60 * 24 * 7
+            response.set_cookie(
+                key="isLoggedIn",
+                value=True,
+                httponly=True,
+                secure=True,
+                samesite="None",
+                max_age=60 * 10,
+                expires=60 * 10,
             )
 
             return res
@@ -151,9 +152,6 @@ def google_login(request):
                 'message': 'Email not found'
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        username = email.split('@')[0]
-        username = re.sub(r'[^a-zA-Z0-9]', '', username)
-
         try:
             user = User.objects.get(username=given_name)
         except User.DoesNotExist:
@@ -176,8 +174,9 @@ def google_login(request):
 
         response = Response({
             "status": "success",
+            "token":access_token,
             "auth":True,
-            "message": "User logged in successfully",
+            "message": "Login successful"
         }, status=status.HTTP_200_OK)
 
         response.set_cookie(
@@ -217,7 +216,6 @@ def google_login(request):
             "status":"error",
             "message":f"Error occured {e}"
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 
 
 
@@ -370,15 +368,13 @@ def protected_view(request):
         }, status=status.HTTP_200_OK)
 
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
 def logout(request):
     try:
-        refresh_token = request.COOKIES.get("refresh_token")
-        if refresh_token:
-            token = RefreshToken(refresh_token)
-            token.blacklist() 
-
         response = Response({
             "status": "success",
+            "auth":False,
             "message": "You Logged out Successfully",
         }, status=status.HTTP_200_OK)
 
@@ -388,7 +384,10 @@ def logout(request):
 
         return response
     except Exception as e:
-        return Response({"status": "error", "message": f"Error logging out: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({
+            "status": "error", 
+            "message": f"Error logging out: {e}"
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 
@@ -427,64 +426,58 @@ def set_user_profile(request):
     user = request.user
     profile_info, _ = Profile.objects.get_or_create(user=user)
     data = json.loads(request.body)
+    username = data.get("username")
+    email = request.data.get("email")
     user_bio = data.get("bio")
     profile_picture = data.get("profile_image")
     cover_picture = data.get("cover_image")
-    email = request.data.get("email")
 
     try:
 
         with transaction.atomic():
+            updated = False 
+
             if profile_picture:
                 if profile_info.profile_picture:
                     profile_info.profile_picture.delete()
-
                 profile_info.profile_picture = profile_picture
-                profile_info.save()
-                return Response({
-                    "status":"success",
-                    "message":"Profile Image Updated successfully"
-                },status=status.HTTP_201_CREATED)
+                updated = True
 
             if cover_picture:
                 if profile_info.cover_picture:
                     profile_info.cover_picture.delete()
-
                 profile_info.cover_picture = cover_picture
-                profile_info.save()
-                return Response({
-                    "status":"success",
-                    "message":"Cover Image Updated successfully"
-                },status=status.HTTP_201_CREATED)
+                updated = True
 
             if user_bio:
-                if profile_info.bio:
-                   del profile_info.bio
-
                 profile_info.bio = user_bio
+                updated = True
+
+            if updated:
                 profile_info.save()
 
-                return Response({
-                    "status":"success",
-                    "message":"Bio Updated successfully"
-                },status=status.HTTP_201_CREATED)  
-            
             if email:
                 if User.objects.filter(email=email).exists():
                     return Response({
-                        "status":"error",
-                        "message":"Email already exists"
+                        "status": "error",
+                        "message": f"{email} already exists"
                     }, status=status.HTTP_400_BAD_REQUEST)
-                    
-                
-                else:
-                    request.user.email = email
-                    request.user.save()
+
+                request.user.email = email
+
+            if username:
+                if User.objects.filter(username=username).exists():
                     return Response({
-                        "status":"success",
-                        "message":"Email updated successfully"
-                    }, status=status.HTTP_200_OK)
-                
+                        "status": "error",
+                        "message":f"{username} already exists"
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+                request.user.username = username
+
+            return Response({
+                "status": "success",
+                "message": "You updated your profile"
+            }, status=status.HTTP_201_CREATED) 
 
 
     except Exception as e:
@@ -535,7 +528,7 @@ def chat_message(request, username):
         all_messages = Chat.objects.filter(
             (Q(user=user) & Q(recipient=friend_user)) |
             (Q(user=friend_user) & Q(recipient=user))
-        )
+        ).order_by('-sent_at')
 
         serializer = ChatSerialzer(all_messages, many=True)
         serialize_profile = UserSerializer(friend_user)
@@ -555,6 +548,43 @@ def chat_message(request, username):
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
 
+
+@api_view(['GET'])
+def get_friends_and_messages(request):
+    try:
+        user = request.user
+        friends = FriendRequest.objects.filter(
+            Q(from_user=user, is_accepted=True) | Q(to_user=user, is_accepted=True)
+        ).select_related('from_user', 'to_user')
+
+        friend_data = []
+        seen_chat_pairs = set() 
+
+        for friend in friends:
+            friend_user = friend.to_user if friend.from_user == user else friend.from_user
+            chat_pair = tuple(sorted([user.id, friend_user.id]))
+            
+            if chat_pair not in seen_chat_pairs:
+                seen_chat_pairs.add(chat_pair)
+
+                messages = Chat.objects.filter(
+                    (Q(user=user) & Q(recipient=friend_user)) |
+                    (Q(user=friend_user) & Q(recipient=user))
+                ).order_by('sent_at').distinct()
+
+                friend_data.append({
+                    "friend": UserSerializer(friend_user).data,
+                    "messages": ChatSerialzer(messages, many=True).data
+                })
+
+        return Response({"chats": friend_data}, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        return Response(
+            {"error": str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )   
+    
 
 
 @api_view(['POST'])

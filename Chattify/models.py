@@ -8,7 +8,10 @@ class Chat(models.Model):
     message = models.TextField(blank=True, null=True)
     media = models.FileField(upload_to='message_images/', blank=True)
     sent_at = models.DateTimeField(auto_now_add=True)
+    is_deleted = models.BooleanField(default=False, null=True)
     is_read = models.BooleanField(default=False)
+    read_at = models.DateTimeField(blank=True, null=True)
+    delivered_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         constraints = [
@@ -17,7 +20,6 @@ class Chat(models.Model):
                 name='prevent_self_message'
             )
         ]
-
 
 
 class Profile(models.Model):
