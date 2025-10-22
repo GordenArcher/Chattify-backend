@@ -1,4 +1,3 @@
-
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from .auth_helpers import get_user_from_token
 
@@ -12,8 +11,15 @@ class CookieJWTAuthentication(JWTAuthentication):
         token = request.COOKIES.get("access_token") or request.COOKIES.get("jwt")
         if token:
             return token
-        # Fallback to header
-        return super().get_raw_token(request)
+
+        # Fallback to Authorization header
+        auth_header = request.META.get("HTTP_AUTHORIZATION")
+        if not auth_header:
+            return None
+        parts = auth_header.split()
+        if len(parts) != 2 or parts[0].lower() != "bearer":
+            return None
+        return parts[1]
 
     def authenticate(self, request):
         raw_token = self.get_raw_token(request)

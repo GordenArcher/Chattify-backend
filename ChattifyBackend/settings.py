@@ -94,6 +94,7 @@ MIDDLEWARE = [
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         "handlers.utils.custom_auth.CookieJWTAuthentication",
+        # 'Chattify.authentication.CookieOrHeaderAuthentication'
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
