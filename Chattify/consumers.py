@@ -2,14 +2,18 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from asgiref.sync import sync_to_async
 import json
 from django.contrib.auth import get_user_model
+from django.utils.timezone import now
 from django.core.cache import cache
 from .models import Chat, FriendRequest
-from django.db.models import Q
-import logging
-import uuid
-from django.utils.timezone import now
 from django.core.files.base import ContentFile
 import base64
+from django.db.models import Q
+import uuid
+from django.contrib.auth.models import AnonymousUser
+import logging
+from rest_framework_simplejwt.tokens import AccessToken
+import urllib.parse
+
 
 logger = logging.getLogger(__name__)
 
@@ -17,101 +21,123 @@ User = get_user_model()
 
 class ChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
-        logger.debug("Starting WebSocket connection attempt")
+        logger.info("=" * 50)
+        logger.info("NEW WEBSOCKET CONNECTION ATTEMPT")
+        logger.info("=" * 50)
         
-        # Initialize attributes
-        self.user = None
-        self.sender_username = None
-        self.recipient_username = None
-        self.private_room_group_name = None
-        self.global_room_group_name = None
+        # Get authenticated user from cookies
+        self.user = await self.get_user()
         
-        try:
-            # Get sender username from URL
-            self.sender_username = self.scope['url_route']['kwargs'].get('username')
-            if not self.sender_username:
-                logger.warning("No username provided in URL")
-                await self.close()
-                return
-            
-            # Authenticate the user by username
-            self.user = await self.get_user_by_username(self.sender_username)
-            if not self.user or not self.user.is_authenticated:
-                logger.warning(f"User {self.sender_username} not authenticated")
-                await self.close()
-                return
+        logger.info(f"User object: {self.user}")
+        logger.info(f"User type: {type(self.user)}")
+        logger.info(f"Is authenticated: {self.user.is_authenticated if hasattr(self.user, 'is_authenticated') else 'N/A'}")
 
-            logger.debug(f"User authenticated: {self.sender_username}")
+        if not self.user or not self.user.is_authenticated:
+            logger.warning(f"❌ User not authenticated. Closing connection.")
+            logger.warning(f"User: {self.user}, Authenticated: {getattr(self.user, 'is_authenticated', False)}")
+            await self.close(code=4001)
+            return
+        
+        logger.info(f"✅ User {self.user.username} authenticated successfully")
+
+        self.message_count = 0
+        self.sender = self.user
+        
+        # Create a personal channel for this user to receive all their messages
+        self.user_channel = f"user_{self.user.username}"
+        
+        logger.info(f"User {self.sender.username} connecting to personal channel {self.user_channel}")
+
+        # Accept WebSocket connection
+        await self.accept()
+
+        # Add user to their personal channel
+        await self.channel_layer.group_add(
+            self.user_channel,
+            self.channel_name
+        )
+        
+        # Update user status to online
+        cache.set(f"user_status_{self.user.username}", "Online", timeout=None)
+
+        # Get all friends and add this user to their chat rooms
+        friends = await self.get_friends_list(self.user)
+        
+        for friend_username in friends:
+            # Create room name for each friend
+            usernames = sorted([self.user.username, friend_username])
+            room_name = f"chat_{usernames[0]}_{usernames[1]}"
             
-            # Get recipient username from URL (if present)
-            self.recipient_username = self.scope['url_route']['kwargs'].get('recipient')
+            # Join each chat room
+            await self.channel_layer.group_add(room_name, self.channel_name)
             
-            # Set up the global room group for the user
-            self.global_room_group_name = f"user_{self.sender_username}"
-            
-            # Set up private room group if recipient is provided
-            if self.recipient_username:
-                self.private_room_group_name = self.get_room_group_name(self.sender_username, self.recipient_username)
-                logger.info(f"User {self.sender_username} connecting to chat with {self.recipient_username}")
-            else:
-                logger.info(f"User {self.sender_username} connecting to global notifications")
-            
-            # Accept the WebSocket connection
-            await self.accept()
-            
-            # Add to global channel group
-            await self.channel_layer.group_add(
-                self.global_room_group_name,
-                self.channel_name
-            )
-            
-            # Add to private channel group if recipient is specified
-            if self.recipient_username and self.private_room_group_name:
-                await self.channel_layer.group_add(
-                    self.private_room_group_name,
-                    self.channel_name
-                )
-            
-            # Set user status to "Online"
-            cache.set(f"user_status_{self.sender_username}", "Online", timeout=None)
-            
-            # Broadcast user status update
+            # Notify friend that this user is online
             await self.channel_layer.group_send(
-                self.global_room_group_name,
+                f"user_{friend_username}",
                 {
                     'type': 'user_status',
-                    'username': self.sender_username,
+                    'username': self.user.username,
                     'status': 'Online',
                 }
             )
-            
-            # Send friends status
-            friends_status = await self.get_friends_online_status(self.user)
-            await self.send_friends_status(friends_status)
-            
-        except Exception as e:
-            logger.error(f"WebSocket connect error: {e}")
-            await self.close()
 
-    def get_room_group_name(self, sender_username, recipient_username):
-        """Generate a unique group name for private chats, based on alphabetical order."""
-        return f"{min(sender_username, recipient_username)}_{max(sender_username, recipient_username)}"
-       
-    @sync_to_async
-    def get_user_by_username(self, username):
-        """Retrieve user by username."""
-        if not username:
-            logger.warning("No username provided")
-            return None
-        
+        # Send friends' online status to this user
+        friends_status = await self.get_friends_online_status(self.user)
+        await self.send_friends_status(friends_status)
+
+    async def get_user(self):
+        """Retrieve user from JWT token in cookies or query string."""
         try:
-            # Fetch user from the database by username
-            user = User.objects.get(username=username)
-            logger.debug(f"User found: {user.username}")
+            # Debug: Log all cookies
+            cookies = self.scope.get('cookies', {})
+            logger.debug(f"Available cookies: {list(cookies.keys())}")
+            
+            # Try different cookie names
+            token_key = (
+                cookies.get('access_token') or 
+                cookies.get('access') or 
+                cookies.get('token') or
+                cookies.get('jwt')
+            )
+
+            # Fallback to query string
+            if not token_key:
+                query_string = self.scope.get("query_string", b"").decode()
+                logger.debug(f"Query string: {query_string}")
+                query_params = urllib.parse.parse_qs(query_string)
+                token_key = query_params.get('token', [None])[0]
+
+            if not token_key:
+                logger.warning(f"No access token found. Cookies: {list(cookies.keys())}")
+                return AnonymousUser()
+
+            logger.debug(f"Token found: {token_key[:20]}...")
+            
+            # Validate and decode token
+            access_token = AccessToken(token_key)
+            
+            # Get user from database
+            user = await sync_to_async(User.objects.get)(id=access_token['user_id'])
+            logger.info(f"User authenticated: {user.username}")
             return user
-        except User.DoesNotExist:
-            logger.warning(f"User {username} not found")
-            return None
+
+        except Exception as e:
+            logger.error(f"Authentication error: {str(e)}", exc_info=True)
+            return AnonymousUser()
+
+    @sync_to_async
+    def get_friends_list(self, user):
+        """Get list of friend usernames."""
+        friends = FriendRequest.objects.filter(
+            Q(is_accepted=True) & (Q(from_user=user) | Q(to_user=user))
+        )
+        
+        friend_usernames = []
+        for friend_request in friends:
+            friend = friend_request.to_user if friend_request.from_user == user else friend_request.from_user
+            friend_usernames.append(friend.username)
+        
+        return friend_usernames
 
     @sync_to_async
     def get_friends_online_status(self, user):
@@ -128,14 +154,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
             friends_statuses[friend.username] = status
 
         return friends_statuses
-    
-    async def user_status(self, event):
-        """Handle and broadcast user status updates."""
-        await self.send(text_data=json.dumps({
-            'type': 'user_status',
-            'username': event['username'],
-            'status': event['status'],
-        }))
 
     async def send_friends_status(self, friends_statuses):
         """Send the online status of all friends to the frontend."""
@@ -144,71 +162,75 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'friends_statuses': friends_statuses
         }))
 
+    async def user_status(self, event):
+        """Handle user status updates."""
+        await self.send(text_data=json.dumps({
+            'type': 'user_status',
+            'username': event['username'],
+            'status': event['status'],
+        }))
+
     async def disconnect(self, close_code):
         """Handle WebSocket disconnection."""
-        try:
-            # If user isn't authenticated, just return
-            if not hasattr(self, 'user') or self.user is None:
-                logger.debug(f"Unauthenticated user disconnecting with code {close_code}")
-                return
+        if hasattr(self, 'user') and hasattr(self, 'user_channel'):
+            # Remove from personal channel
+            await self.channel_layer.group_discard(self.user_channel, self.channel_name)
 
-            logger.info(f"User {self.user.username} disconnecting with code {close_code}")
-            
-            # Remove from global room group
-            if hasattr(self, 'global_room_group_name') and self.global_room_group_name:
-                await self.channel_layer.group_discard(
-                    self.global_room_group_name, 
-                    self.channel_name
-                )
+            # Update user status to offline
+            cache.set(f"user_status_{self.user.username}", "Offline", timeout=None)
 
-                # Update user status
-                cache.set(f"user_status_{self.user.username}", "Offline", timeout=None)
-                
-                # Broadcast status update
+            # Notify all friends that this user is offline
+            friends = await self.get_friends_list(self.user)
+            for friend_username in friends:
+                # Notify each friend
                 await self.channel_layer.group_send(
-                    self.global_room_group_name,
+                    f"user_{friend_username}",
                     {
                         'type': 'user_status',
                         'username': self.user.username,
                         'status': 'Offline',
                     }
                 )
-            
-            # Remove from private room group if applicable
-            if hasattr(self, 'private_room_group_name') and self.private_room_group_name:
-                await self.channel_layer.group_discard(
-                    self.private_room_group_name, 
-                    self.channel_name
-                )
-        except Exception as e:
-            logger.error(f"Error in disconnect: {e}") 
+                
+                # Leave chat rooms
+                usernames = sorted([self.user.username, friend_username])
+                room_name = f"chat_{usernames[0]}_{usernames[1]}"
+                await self.channel_layer.group_discard(room_name, self.channel_name)
 
     async def receive(self, text_data):
-        """Handle incoming messages."""
         try:
             data = json.loads(text_data)
             message = (data.get('message') or '').strip()
             media = data.get('media')
             typing_status = data.get('typing', False)
+            recipient_username = data.get('recipient')  # Get recipient from message data
 
-            # Handle typing status
+            if not recipient_username:
+                await self.send_error('Recipient username is required')
+                return
+
+            # Handle typing indicator
             if 'typing' in data:
+                # Create room name
+                usernames = sorted([self.sender.username, recipient_username])
+                room_name = f"chat_{usernames[0]}_{usernames[1]}"
+                
                 await self.channel_layer.group_send(
-                    self.room_group_name,
+                    room_name,
                     {
                         'type': 'show_typing',
                         'typing': typing_status,
-                        'loggedInUser': self.sender_username,
+                        'loggedInUser': self.sender.username,
                     }
                 )
                 return 
 
-            # If no message and no media, send error
+            # Validate message or media exists
             if not message and not media:
                 await self.send_error('You must send either a message or media')
                 return
 
-            # Handle media file
+            # Handle media upload
             media_file = None
             if media:
                 media_file = await self.save_media_async(media)
@@ -217,24 +239,28 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     return
 
             # Get recipient
-            recipient = await self.get_recipient_async()
+            recipient = await self.get_recipient_async(recipient_username)
             if not recipient:
                 await self.send_error('Recipient does not exist')
                 return
 
-            # Save the message
+            # Save message to database
             message_obj = await self.save_message_async(
-                self.user, recipient, message, media_file
+                self.sender, recipient, message, media_file
             )
 
-            # Broadcast the message to the group
+            # Create room name for this chat
+            usernames = sorted([self.sender.username, recipient_username])
+            room_name = f"chat_{usernames[0]}_{usernames[1]}"
+
+            # Broadcast message to both users in the chat
             await self.channel_layer.group_send(
-                self.room_group_name,
+                room_name,
                 {
                     'type': 'chat_message',
                     'message': message,
                     'media': message_obj.media.url if message_obj.media else None,
-                    'user': self.user.username,
+                    'user': self.sender.username,
                     'recipient': recipient.username,
                     'message_id': message_obj.id,
                     'sent_at': message_obj.sent_at.isoformat(),
@@ -257,6 +283,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def chat_message(self, event):
         """Handle and broadcast chat messages."""
+        self.message_count += 1
+
         await self.send(text_data=json.dumps({
             'type': 'chat_message',
             'message': event['message'],
@@ -265,23 +293,41 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'user': event['user'],
             'recipient': event['recipient'],
             'sent_at': event['sent_at'],
-            'loggedInUser': self.sender_username,
+            'loggedInUser': self.sender.username,
+            'incomingMessageCount': self.message_count,
         }))
 
     @sync_to_async
     def save_message_async(self, user, recipient, message, media=None):
-        """Save a new message to the database."""
-        chat = Chat.objects.create(
-            sender=user,
+        return Chat.objects.create(
+            user=user,
             recipient=recipient,
             message=message,
-            media=media
+            media=media,
+            sent_at=now(),
         )
-        return chat
 
-    async def send_error(self, message):
-        """Send error message back to client."""
-        await self.send(text_data=json.dumps({
-            'type': 'error',
-            'message': message,
-        }))
+    @sync_to_async
+    def save_media_async(self, media):
+        try:
+            format, imgstr = media.split(';base64,')
+            ext = format.split('/')[-1]
+            filename = f"{now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex}.{ext}"
+            file_data = ContentFile(base64.b64decode(imgstr), name=filename)
+            return file_data
+        except Exception as e:
+            logger.error(f"Error saving media: {e}")
+            return None
+
+    async def send_error(self, error_message):
+        await self.send(text_data=json.dumps({'error': error_message}))
+
+    async def get_room_group_name(self, sender_username, recipient_username):
+        return f"{min(sender_username, recipient_username)}_{max(sender_username, recipient_username)}"
+
+    @sync_to_async
+    def get_recipient_async(self, recipient_username):
+        try:
+            return User.objects.get(username=recipient_username)
+        except User.DoesNotExist:
+            return None

@@ -1,5 +1,5 @@
 from django.shortcuts import get_object_or_404
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.response import Response
 from django.contrib.auth.models import User
 from rest_framework import status
@@ -8,7 +8,6 @@ from django.contrib import auth
 from .serializers import UserSerializer, ProfileSerializer, ChatSerialzer, FriendRequestSerializer
 from django.db import transaction
 from .models import Profile, Chat, FriendRequest
-from django.contrib.gis.geoip2 import GeoIP2
 import json
 from django.db.models import Q
 from django.contrib.auth import authenticate
@@ -18,11 +17,13 @@ from django.conf import settings
 import jwt
 from datetime import datetime, timedelta, timezone
 import requests
-import re
+from handlers.utils.get_agent import get_client_ip, get_location
+from handlers.utils.cookies.setCookie import set_cookie
 
 
 # Create your views here.
 @api_view(['POST'])
+@permission_classes([])
 def login(request):
     username = request.data.get("username")
     password = request.data.get("password")
@@ -31,47 +32,21 @@ def login(request):
         user = authenticate(username=username, password=password)
     
         if user:
+            auth.login(request, user)
+
             refresh = RefreshToken.for_user(user)
             access_token = str(refresh.access_token)
 
             response = Response({
-                "status":"sucess",
-                "token":access_token,
+                "status":"success",
                 "auth":True,
                 "message": "Login successful"
             }, status=status.HTTP_200_OK)
 
-            response.set_cookie(
-                key="access_token",
-                value=access_token,
-                httponly=True,
-                secure=True,
-                samesite="None",
-                max_age=60 * 10,
-                expires=60 * 10,
-            )
-
-            response.set_cookie(
-                key="refresh_token",
-                value=str(refresh),
-                httponly=True,
-                secure=True,
-                samesite="None",
-                max_age=60 * 60 * 24 * 7, 
-                expires=60 * 60 * 24 * 7,
-            )
-
-            response.set_cookie(
-                key="isLoggedIn",
-                value=True,
-                httponly=True,
-                secure=True,
-                samesite="None",
-                max_age=60 * 10,
-                expires=60 * 10,
-            )
+            set_cookie(response, access_token, refresh)
 
             return response
+
         else:
             return Response({
                 "status":"error",
@@ -79,8 +54,7 @@ def login(request):
                 }, status=status.HTTP_401_UNAUTHORIZED)
         
     except Exception as e:
-        return Response({}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)    
-
+        return Response({"message":"Error loggin in"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)    
 
 
 class customTokenRefreshView(TokenRefreshView):
@@ -97,34 +71,17 @@ class customTokenRefreshView(TokenRefreshView):
             res = Response()
             res.data = {"refreshed":True, "token":access_token}
 
-            res.set_cookie(
-                key="access_token",
-                value=access_token,
-                secure=True,
-                httponly=True,
-                samesite='None',
-                path='/',
-                max_age=60 * 10,
-                expires=60 * 10,
-            )
+            set_cookie(response, access_token, refresh_token)
 
-            response.set_cookie(
-                key="isLoggedIn",
-                value=True,
-                httponly=True,
-                secure=True,
-                samesite="None",
-                max_age=60 * 10,
-                expires=60 * 10,
-            )
+            return response
 
-            return res
 
         except:
             return Response({"refreshed":False}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)    
 
 
 @api_view(['POST'])
+@permission_classes([])
 def google_login(request):
 
     try:
@@ -153,24 +110,15 @@ def google_login(request):
             }, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            user = User.objects.get(username=given_name)
+            user = User.objects.get(email=email)
         except User.DoesNotExist:
             return Response({
                 "status":"error",
-                'message': 'User not found'
+                'message': 'Email does not exist'
             }, status=status.HTTP_404_NOT_FOUND)
 
-        access_payload = {
-            'id': user.id,
-            'exp': datetime.now(timezone.utc) + timedelta(minutes=10),
-        }
-        access_token = jwt.encode(access_payload, settings.SECRET_KEY, algorithm='HS256')
-
-        refresh_payload = {
-            'id': user.id,
-            'exp': datetime.now(timezone.utc) + timedelta(days=7),
-        }
-        refresh_token = jwt.encode(refresh_payload, settings.SECRET_KEY, algorithm='HS256')
+        refresh_token = RefreshToken.for_user(user)
+        access_token = str(refresh_token.access_token)
 
         response = Response({
             "status": "success",
@@ -179,35 +127,7 @@ def google_login(request):
             "message": "Login successful"
         }, status=status.HTTP_200_OK)
 
-        response.set_cookie(
-            key="access_token",
-            value=access_token,
-            httponly=True,
-            secure=True,
-            samesite="None",
-            max_age=60 * 10,
-            expires=60 * 10,
-        )
-
-        response.set_cookie(
-            key="refresh_token",
-            value=refresh_token,
-            httponly=True,
-            secure=True,
-            samesite="None",
-            max_age=60 * 60 * 24 * 7,
-            expires=60 * 60 * 24 * 7,
-        )
-
-        response.set_cookie(
-            key="isLoggedIn",
-            value="true", 
-            httponly=True,
-            secure=True,
-            samesite="None",
-            max_age=60 * 60 * 24 * 7,
-            expires=60 * 60 * 24 * 7,
-        )
+        set_cookie(response, access_token, refresh_token)
 
         return response
     
@@ -218,92 +138,94 @@ def google_login(request):
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-
 @api_view(['POST'])
+@permission_classes([])
 def google_register(request):
-    token = request.data.get('token')
-    if not token:
-        return Response({
-            "status":"error",
-            'message': 'Token is required'
-        }, status=status.HTTP_400_BAD_REQUEST)
-
-    google_url = f"https://oauth2.googleapis.com/tokeninfo?id_token={token}"
-    response = requests.get(google_url)
-
-    if response.status_code != 200:
-        return Response({
-            "status":"error",
-            'message':'Invalid token'
-        }, status=status.HTTP_400_BAD_REQUEST)
-    
-    user_data = response.json()
-    email = user_data.get('email')
-    picture = user_data.get('picture')
-    given_name = user_data.get('given_name')
-    family_name = user_data.get('family_name')
-
-    if not email:
-        return Response({
-            "status":"error",
-            'message': 'Email not found in Google data'
-        }, status=status.HTTP_400_BAD_REQUEST)
-
-    user = User.objects.filter(email=email).first()
-
-    if user:
-        return Response({
-            "status":"error",
-            'message': 'Email already exists'
-        }, status=status.HTTP_400_BAD_REQUEST)
-
-    if User.objects.filter(username=given_name).exists():
-        return Response({
-            "status":"error",
-            "message":"username already exists"
-        }, status=status.HTTP_400_BAD_REQUEST)
-
-    user = User.objects.create_user(
-        username=given_name,
-        email=email,
-        first_name=given_name,
-        last_name=family_name,
-        password=None
-    )
-
-    client_ip = get_client_ip(request)
-    city, country = get_location(client_ip)
-    Profile.objects.create(user=user, profile_picture=picture, ip_address=client_ip, city=city, country=country)
-    user.save()
-
-    return Response({
-        "status":"sucess",
-        'message': 'Account created successfully'
-    }, status=status.HTTP_201_CREATED)
-
-
-def get_client_ip(request):
-    """Extract the real IP address even behind a proxy."""
-    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-    if x_forwarded_for:
-        return x_forwarded_for.split(',')[0] 
-    return request.META.get('REMOTE_ADDR')
-
-
-
-def get_location(ip):
-    """Get city and country from IP address using GeoIP2."""
     try:
-        geo = GeoIP2()
-        location = geo.city(ip)
-        city = location.get("city", "Unknown")
-        country = geo.country_name(ip)
-        return city, country
-    except Exception:
-        return "Unknown", "Unknown"
+        token = request.data.get('token')
+        if not token:
+            return Response({
+                "status": "error",
+                'message': 'Token is required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        google_url = f"https://oauth2.googleapis.com/tokeninfo?id_token={token}"
+        response = requests.get(google_url)
+
+        if response.status_code != 200:
+            return Response({
+                "status": "error",
+                'message': 'Invalid token'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        user_data = response.json()
+        email = user_data.get('email')
+        picture = user_data.get('picture')
+        given_name = user_data.get('given_name')
+        family_name = user_data.get('family_name')
+
+        if not email:
+            return Response({
+                "status": "error",
+                'message': 'Email not found in Google data'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        user = User.objects.filter(email=email).first()
+
+        if user:
+            return Response({
+                "status": "error",
+                'message': 'Email already exists'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if User.objects.filter(username=given_name).exists():
+            return Response({
+                "status": "error",
+                "message": "username already taken"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        user = User.objects.create_user(
+            username=email,
+            email=email,
+            first_name=given_name,
+            last_name=family_name,
+            password=None
+        )
+
+        client_ip = get_client_ip(request)
+        city, country = get_location(client_ip)
+        profile = Profile.objects.create(user=user, ip_address=client_ip, city=city, country=country)
+        
+        if picture:
+            try:
+                img_response = requests.get(picture)
+                if img_response.status_code == 200:
+                    from django.core.files.base import ContentFile
+                    img_filename = f"profile_image{user.id}ddwm.jpg"
+                    
+                    profile.profile_picture.save(img_filename, ContentFile(img_response.content), save=True)
+            except Exception as e:
+                print(f"Error downloading profile picture: {e}")
+        
+        user.save()
+
+        return Response({
+            "status": "success",
+            'message': 'Account created successfully'
+        }, status=status.HTTP_201_CREATED)
+        
+    except Exception as e:
+        print(f"Unexpected error in google_register: {e}")
+        return Response({
+            "status": "error",
+            "message": "An unexpected error occurred during registration"
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 
 
 @api_view(['POST'])
+@permission_classes([])
 def register(request):
     data = request.data
     username = data.get("username")
@@ -365,7 +287,7 @@ def protected_view(request):
         "status":"sucess",
         "auth":True,
         "message": "You are authenticated!"
-        }, status=status.HTTP_200_OK)
+    }, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
@@ -391,16 +313,10 @@ def logout(request):
 
 
 
-
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_users(request):
     user = request.user
-    if not user.is_authenticated:
-        return Response({
-            "status": "error",
-            "message": "User is not authenticated"
-        }, status=status.HTTP_401_UNAUTHORIZED)
 
     try:
         all_users = User.objects.all().exclude(id=user.id)
@@ -424,7 +340,8 @@ def get_users(request):
 @permission_classes([IsAuthenticated])
 def set_user_profile(request):
     user = request.user
-    profile_info, _ = Profile.objects.get_or_create(user=user)
+    profile_info, _ = user.profile
+
     data = json.loads(request.body)
     username = data.get("username")
     email = request.data.get("email")
@@ -487,8 +404,6 @@ def set_user_profile(request):
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-
-
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_profile(request):
@@ -546,10 +461,39 @@ def chat_message(request, username):
             "status":"error",
             "message":f"Error fetching messages {e}"
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def delete_chat_message(request, message_id):
+    try:
+
+        message = Chat.objects.get(message_id=message_id)
+
+        if message:
+            message.is_deleted
+
+            return Response({
+                "status":"success",
+                "message":"deleted."
+            }, status=status.HTTP_200_OK)
+        
+        else:
+            return Response({
+                "status":"error",
+                "message": "message not available"
+            }, status=status.HTTP_404_NOT_FOUND)
+
+
+    except Exception as e:
+        return Response({
+            "status":"error",
+            "message":f"Error error occured {e}"
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
 
-
 @api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def get_friends_and_messages(request):
     try:
         user = request.user
@@ -586,13 +530,19 @@ def get_friends_and_messages(request):
         )   
     
 
-
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
-def send_friend_request(request, id):
-    to_user = get_object_or_404(User, id=id)
+def send_friend_request(request, username):
     
     try:
+        try:
+            to_user =User.objects.get(username=username)
+        except User.DoesNotExist:
+            return Response({
+                    "status":"error",
+                    "message":f"{username} does not exist."
+                }, status=status.HTTP_404_NOT_FOUND)
+        
         if FriendRequest.objects.filter(from_user=request.user, to_user=to_user, is_accepted=False).exists():
             return Response({
                 "status":"error",
@@ -626,25 +576,35 @@ def send_friend_request(request, id):
 
 
 
-    
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
-def recieved_request(request):
+def pending_friend_requests(request):
     try:
-        received_requests = FriendRequest.objects.filter(to_user=request.user, is_accepted=False)
-        serializer = FriendRequestSerializer(received_requests, many=True)
+        user = request.user
+        received = FriendRequest.objects.filter(to_user=user, is_accepted=False)
+        received_serialized = FriendRequestSerializer(received, many=True).data
+        for item in received_serialized:
+            item["request_type"] = "received"
+            item["status"] = "accept" 
+
+        sent = FriendRequest.objects.filter(from_user=user, is_accepted=False)
+        sent_serialized = FriendRequestSerializer(sent, many=True).data
+        for item in sent_serialized:
+            item["request_type"] = "sent"
+            item["status"] = "pending" 
+
+        all_pending = received_serialized + sent_serialized
+
         return Response({
-            "status":"success",
-            "data": serializer.data
+            "status": "success",
+            "data": all_pending
         }, status=status.HTTP_200_OK)
-    
+
     except Exception as e:
         return Response({
-            "status":"error",
-            "message":f"error fetching recieved request"
-        } ,status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
-
+            "status": "error",
+            "message": f"Error fetching pending requests: {str(e)}"
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['GET'])
@@ -687,14 +647,29 @@ def sent_request(request):
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
-def accept_friend_request(request, request_id):
-    friend_request = get_object_or_404(FriendRequest, id=request_id, to_user=request.user)
+def accept_friend_request(request, username):
     
     try:
-        friend_request.is_accepted = True
-        friend_request.save()
+
+        try:
+            from_user =User.objects.get(username=username)
+        except User.DoesNotExist:
+            return Response({
+                    "status":"error",
+                    "message":f"{username} does not exist."
+                }, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            friend_request = FriendRequest.objects.get(from_user=from_user, to_user=request.user)
+            friend_request.is_accepted = True
+            friend_request.save()
+        except FriendRequest.DoesNotExist:
+            return Response({
+                "status":"error",
+                "message":f"No request has been sent from {username}."
+            }, status=status.HTTP_404_NOT_FOUND)
         
-        FriendRequest.objects.get_or_create(from_user=request.user, to_user=friend_request.from_user,  is_accepted=True)
+        
         return Response({
             "status":"success",
             "message":f"You are now friends with {friend_request.from_user.username}."
@@ -708,21 +683,37 @@ def accept_friend_request(request, request_id):
                   
 
 
-
 @api_view(['POST'])
-def reject_friend_request(request, request_id):
-    friend_request = get_object_or_404(FriendRequest, id=request_id, to_user=request.user)
-
+def reject_friend_request(request, username):
     try:
-        friend_request.delete()
+
+        try:
+            from_user =User.objects.get(username=username)
+        except User.DoesNotExist:
+            return Response({
+                    "status":"error",
+                    "message":f"{username} does not exist."
+                }, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            friend_request = FriendRequest.objects.get(from_user=from_user, to_user=request.user)
+            friend_request.is_accepted = False
+            friend_request.delete()
+        except FriendRequest.DoesNotExist:
+            return Response({
+                "status":"error",
+                "message":f"No request has been sent from {username}."
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        
         return Response({
             "status":"success",
-            "message":f"You removed {friend_request.from_user.username}."
+            "message":f"You are now strangers with {friend_request.from_user.username}."
         }, status=status.HTTP_200_OK)
-    
+
     except Exception as e:
         return Response({
             "status":"error",
             "message":f"error removing {friend_request.from_user.username}"
         } ,status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-   
+                  

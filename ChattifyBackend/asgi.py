@@ -7,19 +7,19 @@ For more information on this file, see
 https://docs.djangoproject.com/en/5.1/howto/deployment/asgi/
 """
 
-import os
-from django.core.asgi import get_asgi_application
 from channels.routing import ProtocolTypeRouter, URLRouter
-from channels.layers import get_channel_layer
-from channels.auth import AuthMiddlewareStack
-from Chattify.routing import websocket_urlpatterns
+from channels.security.websocket import AllowedHostsOriginValidator
+from django.core.asgi import get_asgi_application
+from Chattify.auth_middleware import CookieJWTAuthentication
+from Chattify.routing import websocket_urlpatterns  # adjust import as needed
 
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'ChattifyBackend.settings')
+django_asgi_app = get_asgi_application()
+
 application = ProtocolTypeRouter({
-    "http": get_asgi_application(),
-    "websocket": AuthMiddlewareStack(
-        URLRouter(
-            websocket_urlpatterns  
+    "http": django_asgi_app,
+    "websocket": AllowedHostsOriginValidator(
+        CookieJWTAuthentication(
+            URLRouter(websocket_urlpatterns)
         )
     ),
 })

@@ -12,6 +12,8 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 
 from pathlib import Path
 import os
+from dotenv import load_dotenv
+load_dotenv()
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -61,21 +63,15 @@ AUTHENTICATION_BACKENDS = (
     'django.contrib.auth.backends.ModelBackend',
 )
 
-SOCIAL_AUTH_GOOGLE_OAUTH2_KEY = '390111177087-29pcvi1g0o01bb1vstct608pd0jaof79.apps.googleusercontent.com'
-SOCIAL_AUTH_GOOGLE_OAUTH2_SECRET = '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'
+SOCIAL_AUTH_GOOGLE_OAUTH2_KEY = os.getenv("SOCIAL_AUTH_GOOGLE_OAUTH2_KEY")
+SOCIAL_AUTH_GOOGLE_OAUTH2_SECRET = os.getenv("SOCIAL_AUTH_GOOGLE_OAUTH2_SECRET")
 
-REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
-        'Chattify.authentication.CookieOrHeaderAuthentication',
-        'rest_framework.authentication.SessionAuthentication',
-    ],
-}
+
 
 from datetime import timedelta
 
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=10),
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
@@ -85,19 +81,38 @@ SIMPLE_JWT = {
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'middleware.silentrefresh.SilentRefreshJwtMiddleware',
     "corsheaders.middleware.CorsMiddleware",
     'django.middleware.common.CommonMiddleware',
+    'middleware.csrf.CSRFFromCookieMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-CORS_ALLOW_ALL_ORIGINS = True
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        "handlers.utils.custom_auth.CookieJWTAuthentication",
+    ),
+    'DEFAULT_PERMISSION_CLASSES': (
+        'rest_framework.permissions.IsAuthenticated',
+    ),
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.UserRateThrottle',
+        'rest_framework.throttling.AnonRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'user': '100/minute',
+        'anon': '20/minute',
+        'register': '5/hour',
+    },
+}
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
 ]
+
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
 ]
@@ -109,6 +124,8 @@ CORS_ALLOW_HEADERS = (
     'content-type',
     'accept',
     'x-requested-with',
+    'cookie',
+    'set-cookie',
 )
 
 CORS_ALLOW_METHODS = (
@@ -127,13 +144,13 @@ CACHES = {
     }
 }
 
-SESSION_COOKIE_AGE = 60 * 60 * 24 * 7 
-SESSION_COOKIE_SECURE = False 
-CSRF_COOKIE_SECURE = False 
-SESSION_COOKIE_SAMESITE = 'Lax'
-CSRF_COOKIE_SAMESITE = 'Lax'
-SESSION_COOKIE_HTTPONLY = True
-CSRF_COOKIE_HTTPONLY = True
+# SESSION_COOKIE_AGE = 60 * 60 * 24 * 7 
+# SESSION_COOKIE_SECURE = False 
+# CSRF_COOKIE_SECURE = False 
+# SESSION_COOKIE_SAMESITE = 'Lax'
+# CSRF_COOKIE_SAMESITE = 'Lax'
+# SESSION_COOKIE_HTTPONLY = False
+# CSRF_COOKIE_HTTPONLY = False
 
 
 ROOT_URLCONF = 'ChattifyBackend.urls'

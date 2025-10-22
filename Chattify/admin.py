@@ -3,8 +3,8 @@ from .models import Chat, Profile, FriendRequest
 
 # Register your models here.
 class ChatAdmin(admin.ModelAdmin):
-    list_display = ['user', 'recipient', 'message', 'media', 'sent_at', 'is_read', 'read_at', 'delivered_at']
-    search_fields = ['user', 'recipient', 'message', 'media', 'sent_at', 'is_read', 'read_at', 'delivered_at']
+    list_display = ['message_id', 'user', 'recipient', 'message', 'media', 'sent_at', 'is_read', 'read_at', 'delivered_at', 'is_deleted']
+    search_fields = ['message_id', 'user', 'recipient', 'message', 'media', 'sent_at', 'is_read', 'read_at', 'delivered_at', 'is_deleted']
 
     def __str__(self):
         return f"from {self.user} to {self.recipient}"

@@ -3,6 +3,7 @@ from django.contrib.auth.models import User
 
 # Create your models here.
 class Chat(models.Model):
+    message_id = models.UUIDField(unique=True, blank=True, null=True, editable=False, auto_created=True)
     user = models.ForeignKey(User, on_delete=models.CASCADE, blank=True, null=True, related_name='sender')
     recipient = models.ForeignKey(User, on_delete=models.CASCADE, blank=True, null=True, related_name='recipient')
     message = models.TextField(blank=True, null=True)
